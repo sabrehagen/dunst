@@ -154,7 +154,7 @@ char *notification_dmenu_string(struct notification *n)
                 char *key   = (char*) p_key;
                 char *value = (char*) p_value;
 
-                char *act_str = g_strdup_printf("#%s (%s) [%d,%s]", value, n->summary, n->id, key);
+                char *act_str = g_strdup_printf("#%s (%s) [%d,%s]", value, n->appname, n->id, key);
                 dmenu_str = string_append(dmenu_str, act_str, "\n");
 
                 g_free(act_str);
