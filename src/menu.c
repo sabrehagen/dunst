@@ -169,7 +169,7 @@ char *notification_dmenu_string(struct notification *n)
 void invoke_action(const char *action)
 {
         struct notification *invoked = NULL;
-        uint id;
+        gint id;
 
         char *data_start, *data_comma, *data_end;
 
@@ -273,7 +273,8 @@ char *invoke_dmenu(const char *dmenu_input)
                 g_error_free(err);
         } else {
                 size_t wlen = strlen(dmenu_input);
-                if (write(dunst_to_dmenu, dmenu_input, wlen) != wlen) {
+                ssize_t n = write(dunst_to_dmenu, dmenu_input, wlen);
+                if (n < 0 || (size_t)n != wlen) {
                         LOG_W("Cannot feed dmenu with input: %s", strerror(errno));
                 }
                 close(dunst_to_dmenu);
@@ -307,7 +308,7 @@ static GList *get_actionable_notifications(void)
                 }
         }
 
-        return locked_notifications;
+        return g_list_reverse(locked_notifications);
 }
 
 /* see menu.h */
@@ -354,6 +355,14 @@ static gboolean context_menu_result_dispatch(gpointer user_data)
                                 queues_notification_close(n, n->marked_for_closure);
                         n->marked_for_closure = 0;
                 }
+
+                // If the notification was marked for removal, remove it from history
+                if (n->marked_for_removal) {
+                        // Don't close notification if context was aborted
+                        // if (dmenu_output != NULL)
+                        queues_notification_remove(n, n->marked_for_removal);
+                        n->marked_for_removal = 0;
+                }
         }
 
         menu_ctx.locked_notifications = NULL;
@@ -368,6 +377,8 @@ static gboolean context_menu_result_dispatch(gpointer user_data)
 
 static gpointer context_menu_thread(gpointer data)
 {
+        (void)data;
+
         char *dmenu_input = NULL;
         char *dmenu_output;
 
@@ -389,4 +400,3 @@ static gpointer context_menu_thread(gpointer data)
 
         return NULL;
 }
-/* vim: set ft=c tabstop=8 shiftwidth=8 expandtab textwidth=0: */

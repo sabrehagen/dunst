@@ -29,6 +29,7 @@ TEST test_notification_is_duplicate(void)
         a->body = g_strdup("Body");
         a->iconname = g_strdup("Icon");
         a->icon_id = g_strdup("Icon");
+        a->icon_position = ICON_LEFT;
         a->urgency = URG_NORM;
 
         struct notification *b = notification_create();
@@ -37,6 +38,7 @@ TEST test_notification_is_duplicate(void)
         b->body = g_strdup("Body");
         b->iconname = g_strdup("Icon");
         b->icon_id = g_strdup("Icon");
+        b->icon_position = ICON_LEFT;
         b->urgency = URG_NORM;
 
         ASSERT(notification_is_duplicate(a, b));
@@ -128,20 +130,37 @@ TEST test_notification_referencing(void)
         PASS();
 }
 
-
 static struct notification *notification_load_icon_with_scaling(int min_icon_size, int max_icon_size)
 {
+        static bool svg_failed = false;
+
         struct notification *n = notification_create();
 
-        char *path = g_strconcat(base, "/data/icons/valid.svg", NULL); // 16x16
+        char *path;
+        GVariant *raw_icon = NULL;
 
-        GVariant *rawIcon = notification_setup_raw_image(path);
+        if (!svg_failed) {
+                path = g_strconcat(base, "/data/icons/valid.svg", NULL); // 16x16
+                raw_icon = notification_setup_raw_image(path);
+
+                if (raw_icon == NULL) {
+                        svg_failed = true;
+                        printf("Failed to load svg icon, using png\n");
+                        g_free(path);
+                }
+        }
+
+        if (raw_icon == NULL) {
+                path = g_strconcat(base, "/data/icons/valid.png", NULL); // 16x16
+                raw_icon = notification_setup_raw_image(path);
+        }
 
         n->min_icon_size = min_icon_size;
         n->max_icon_size = max_icon_size;
-        notification_icon_replace_data(n, rawIcon);
+        notification_icon_replace_data(n, raw_icon);
+        assert(n->icon_id);
 
-        g_variant_unref(rawIcon);
+        g_variant_unref(raw_icon);
         g_free(path);
 
         return n;
@@ -151,6 +170,7 @@ TEST test_notification_icon_scaling_toosmall(void)
 {
         struct notification *n = notification_load_icon_with_scaling(20, 100);
 
+        ASSERT(n->icon);
         ASSERT_EQ(get_icon_width(n->icon, 1), 20);
         ASSERT_EQ(get_icon_height(n->icon, 1), 20);
 
@@ -164,6 +184,7 @@ TEST test_notification_icon_scaling_toolarge(void)
 {
         struct notification *n = notification_load_icon_with_scaling(5, 10);
 
+        ASSERT(n->icon);
         ASSERT_EQ(get_icon_width(n->icon, 1), 10);
         ASSERT_EQ(get_icon_height(n->icon, 1), 10);
 
@@ -176,6 +197,7 @@ TEST test_notification_icon_scaling_notconfigured(void)
 {
         struct notification *n = notification_load_icon_with_scaling(0, 0);
 
+        ASSERT(n->icon);
         ASSERT_EQ(get_icon_width(n->icon, 1), 16);
         ASSERT_EQ(get_icon_height(n->icon, 1), 16);
 
@@ -188,6 +210,7 @@ TEST test_notification_icon_scaling_notneeded(void)
 {
         struct notification *n = notification_load_icon_with_scaling(10, 20);
 
+        ASSERT(n->icon);
         ASSERT_EQ(get_icon_width(n->icon, 1), 16);
         ASSERT_EQ(get_icon_height(n->icon, 1), 16);
 
@@ -198,7 +221,7 @@ TEST test_notification_icon_scaling_notneeded(void)
 
 TEST test_notification_format_message(struct notification *n, const char *format, const char *exp)
 {
-        n->format = format;
+        notification_replace_format(n, format);
         notification_format_message(n);
 
         ASSERT_STR_EQ(exp, n->msg);
@@ -210,7 +233,7 @@ TEST test_notification_maxlength(void)
 {
         unsigned int len = 5005;
         struct notification *n = notification_create();
-        n->format = "%a";
+        notification_replace_format(n, "%a");
 
         n->appname = g_malloc(len + 1);
         n->appname[len] = '\0';
@@ -219,7 +242,7 @@ TEST test_notification_maxlength(void)
                             " 0123456789"
                             "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                             "abcdefghijklmnopqrstuvwxyz";
-        for (int i = 0; i < len; ++i)
+        for (size_t i = 0; i < len; ++i)
                 n->appname[i] = sigma[rand() % (sizeof(sigma) - 1)];
 
         notification_format_message(n);
@@ -244,23 +267,27 @@ SUITE(suite_notification)
 
         // TEST notification_format_message
         struct notification *a = notification_create();
-        a->appname = g_strdup("MyApp");
-        a->summary = g_strdup("I've got a summary!");
-        a->body =    g_strdup("Look at my shiny <notification>");
-        a->iconname =    g_strdup("/this/is/my/icoknpath.png");
+        a->appname  = g_strdup("MyApp");
+        a->summary  = g_strdup("I've got a summary!");
+        a->body     = g_strdup("Look at my shiny <notification>");
+        a->category = g_strdup("This category");
+        a->iconname = g_strdup("/this/is/my/icoknpath.png");
+        a->stack_tag = g_strdup("test");
         a->progress = 95;
 
         const char *strings[] = {
                 "%a", "MyApp",
                 "%s", "I&apos;ve got a summary!",
                 "%b", "Look at my shiny <notification>",
+                "%c", "This category",
+                "%S", "test",
                 "%I", "icoknpath.png",
                 "%i", "/this/is/my/icoknpath.png",
                 "%p", "[ 95%]",
                 "%n", "95",
                 "%%", "%",
                 "%",  "%",
-                "%UNKNOWN", "%UNKNOWN",
+                "%WHATEVER", "%WHATEVER",
                 NULL
         };
 
@@ -275,5 +302,3 @@ SUITE(suite_notification)
 
         RUN_TEST(test_notification_maxlength);
 }
-
-/* vim: set tabstop=8 shiftwidth=8 expandtab textwidth=0: */

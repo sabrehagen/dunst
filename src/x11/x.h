@@ -15,17 +15,6 @@
 
 #include "screen.h"
 
-struct keyboard_shortcut {
-        const char *str;
-        KeyCode code;
-        KeySym sym;
-        KeySym mask;
-        bool is_valid;
-};
-
-// Cyclical dependency
-#include "../settings.h"
-
 struct x_context {
         Display *dpy;
         XScreenSaverInfo *screensaver_info;
@@ -50,5 +39,5 @@ bool x_setup(void);
 void x_free(void);
 
 double x_get_scale(void);
+
 #endif
-/* vim: set ft=c tabstop=8 shiftwidth=8 expandtab textwidth=0: */

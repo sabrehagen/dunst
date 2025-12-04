@@ -51,8 +51,7 @@ struct notification *test_notification(const char *name, gint64 timeout)
         struct notification *n = test_notification_uninitialized(name);
 
         notification_init(n);
-
-        n->format = "%s\n%b";
+        notification_replace_format(n, "%s\n%b");
 
         if (timeout != -1)
                 n->timeout = S2US(timeout);
@@ -88,5 +87,3 @@ void free_dummy_notification(void *notification)
         // wrapper function to work with g_slist_free_full
         notification_unref((struct notification *) notification);
 }
-
-/* vim: set tabstop=8 shiftwidth=8 expandtab textwidth=0: */

@@ -4,7 +4,14 @@
 #include "settings.h"
 #include "queues.h"
 #include <stddef.h>
+#if defined(__linux__) || defined(__FreeBSD__)
 #include <linux/input-event-codes.h>
+#else
+#define BTN_LEFT	(0x110)
+#define BTN_RIGHT	(0x111)
+#define BTN_MIDDLE	(0x112)
+#define BTN_TOUCH	(0x14a)
+#endif
 
 int get_notification_clickable_height(struct notification *n, bool first, bool last)
 {
@@ -90,7 +97,7 @@ void input_handle_click(unsigned int button, bool button_down, int mouse_x, int 
                         continue;
                 }
 
-                if (act == MOUSE_DO_ACTION || act == MOUSE_CLOSE_CURRENT || act == MOUSE_CONTEXT || act == MOUSE_OPEN_URL) {
+                if (act == MOUSE_DO_ACTION || act == MOUSE_CLOSE_CURRENT || act == MOUSE_REMOVE_CURRENT || act == MOUSE_CONTEXT || act == MOUSE_OPEN_URL) {
                         struct notification *n = get_notification_at(mouse_y);
 
                         if (n) {
@@ -100,6 +107,8 @@ void input_handle_click(unsigned int button, bool button_down, int mouse_x, int 
                                         notification_do_action(n);
                                 } else if (act == MOUSE_OPEN_URL) {
                                         notification_open_url(n);
+                                } else if (act == MOUSE_REMOVE_CURRENT) {
+                                        n->marked_for_removal = REASON_USER;
                                 } else {
                                         notification_open_context_menu(n);
                                 }
@@ -109,4 +118,3 @@ void input_handle_click(unsigned int button, bool button_down, int mouse_x, int 
 
         wake_up();
 }
-/* vim: set ft=c tabstop=8 shiftwidth=8 expandtab textwidth=0: */

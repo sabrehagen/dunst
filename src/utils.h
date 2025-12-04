@@ -17,6 +17,16 @@
 #define STRN_EQ(a, b, n) (strncmp(a, b, n) == 0)
 //! Test if string a and b are the same case-insensitively
 #define STR_CASEQ(a, b) (strcasecmp(a, b) == 0)
+//! Get a non null string from a possibly null one
+#define STR_NN(s) (s == NULL ? "(null)" : s)
+
+//! Stringify the given expression or macro
+#define STR_TO(...) _STR_TO(__VA_ARGS__)
+#define _STR_TO(...) "" # __VA_ARGS__
+
+//! Make a gboolean from a boolean value
+// See https://github.com/dunst-project/dunst/issues/1421
+#define BOOL2G(x) ((x) ? TRUE : FALSE)
 
 //! Assert that expr evaluates to true, if not return with val
 #define ASSERT_OR_RET(expr, val) if (!(expr)) return val;
@@ -148,6 +158,10 @@ gint64 string_to_time(const char *string);
  */
 gint64 time_monotonic_now(void);
 
+gint64 time_now(void);
+
+gint64 modification_time(const char *path);
+
 /**
  * Retrieve the HOME directory of the user running dunst
  *
@@ -246,5 +260,12 @@ FILE * fopen_verbose(const char * const path);
  * when the environment variable doesn't exits.
  */
 void add_paths_from_env(GPtrArray *arr, char *env_name, char *subdir, char *alternative);
+
+bool string_is_int(const char *str);
+
+// Actually checks only the first characters
+// Is true when the string starts with one of:
+// ./ ../ ~ /
+bool is_like_path(const char *string);
+
 #endif
-/* vim: set ft=c tabstop=8 shiftwidth=8 expandtab textwidth=0: */

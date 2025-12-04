@@ -14,6 +14,7 @@
 #include "draw.h"
 #include "log.h"
 #include "menu.h"
+#include "rules.h"
 #include "notification.h"
 #include "option_parser.h"
 #include "queues.h"
@@ -25,6 +26,7 @@ GMainLoop *mainloop = NULL;
 
 static struct dunst_status status;
 static bool setup_done = false;
+char **config_paths = NULL;
 
 /* see dunst.h */
 void dunst_status(const enum dunst_status_field field,
@@ -37,11 +39,21 @@ void dunst_status(const enum dunst_status_field field,
         case S_IDLE:
                 status.idle = value;
                 break;
-        case S_RUNNING:
-                status.running = value;
+        default:
+                LOG_E("Invalid %s enum value in %s:%d for bool type", "dunst_status", __FILE__, __LINE__);
+                break;
+        }
+}
+
+void dunst_status_int(const enum dunst_status_field field,
+                  int value)
+{
+        switch (field) {
+        case S_PAUSE_LEVEL:
+                status.pause_level = value;
                 break;
         default:
-                LOG_E("Invalid %s enum value in %s:%d", "dunst_status", __FILE__, __LINE__);
+                LOG_E("Invalid %s enum value in %s:%d for int type", "dunst_status", __FILE__, __LINE__);
                 break;
         }
 }
@@ -55,6 +67,29 @@ struct dunst_status dunst_status_get(void)
 /* misc functions */
 static gboolean run(void *data);
 
+/**
+ * The reason for which the run function was invoked.
+ * - DUNST_TIMER: the timer until the next event in queue has expired (routine
+ *   wakeup)
+ * - DUNST_WAKEUP: an external event (eg. new notification) triggered a call to
+ *   wake_up (unscheduled wakeup)
+ */
+enum dunst_run_reason {
+        DUNST_TIMER,
+        DUNST_WAKEUP,
+};
+
+const char* dunst_run_reason_str(enum dunst_run_reason reason) {
+        switch(reason) {
+                case DUNST_TIMER:
+                        return "DUNST_TIMER";
+                case DUNST_WAKEUP:
+                        return "DUNST_WAKEUP";
+                default:
+                        return "BAD VALUE";
+        }
+}
+
 void wake_up(void)
 {
         // If wake_up is being called before the output has been setup we should
@@ -65,22 +100,51 @@ void wake_up(void)
         }
 
         LOG_D("Waking up");
-        run(GINT_TO_POINTER(1));
+        run(GINT_TO_POINTER(DUNST_WAKEUP));
 }
 
 static gboolean run(void *data)
 {
-        static gint64 next_timeout = 0;
-        static guint next_timeout_id = 0;
-        int reason = GPOINTER_TO_INT(data);
+        /* Timer gestion
+         * =============
+         *
+         * - At any time (except transiently during the execution of `run`), at
+         *   most one glib timeout source (or "timer" here) exists. If `run`
+         *   was invoked by a timer, it will be deleted upon return, as the
+         *   function always returns G_SOURCE_REMOVE.
+         * - Furthermore, if next_timeout_id is not null, a timer with this
+         *   glib source id exists and is running. As a consequence,
+         *   - if reason is DUNST_TIMER, it is the timer that triggered the
+         *     current call to run;
+         *   - if reason is DUNST_WAKEUP, this timer was scheduled some time in
+         *     the future (or in the past, but not yet executed my the main loop,
+         *     which is equivalent for our purpose).
+         *
+         * Thus, in each call to run,
+         * - if reason is DUNST_WAKEUP and next_timeout_id != 0, we delete this
+         *   timer -- we now have more recent information on which we can
+         *   decide of a (maybe) better timeout.
+         * - in any case, we reset next_timeout_id to 0.
+         * - if there is any event to be run in the future, we set a new timer
+         *   to this time, and update next_timeout_id accordingly.
+         */
 
-        LOG_D("RUN, reason %i", reason);
+        static guint next_timeout_id = 0;
+        enum dunst_run_reason reason = GPOINTER_TO_INT(data);
+
+        LOG_D("RUN, reason %i: %s", reason, dunst_run_reason_str(reason));
         gint64 now = time_monotonic_now();
 
         dunst_status(S_FULLSCREEN, output->have_fullscreen_window());
         dunst_status(S_IDLE, output->is_idle());
 
         queues_update(status, now);
+
+        if(reason == DUNST_WAKEUP && next_timeout_id != 0) {
+                // Delete the upcoming timer
+                g_source_remove(next_timeout_id);
+        }
+        next_timeout_id = 0;
 
         if (!queues_length_displayed()) {
                 output->win_hide(win);
@@ -100,17 +164,9 @@ static gboolean run(void *data)
                 gint64 sleep = timeout_at - now;
                 sleep = MAX(sleep, 1000); // Sleep at least 1ms
 
-                LOG_D("Sleeping for %li ms", sleep/1000);
+                LOG_D("Sleeping for %"G_GINT64_FORMAT" ms", sleep/1000);
 
-                if (sleep >= 0) {
-                        if (reason == 0 || next_timeout < now || timeout_at < next_timeout) {
-                                if (next_timeout != 0) {
-                                        g_source_remove(next_timeout_id);
-                                }
-                                next_timeout_id = g_timeout_add(sleep/1000, run, NULL);
-                                next_timeout = timeout_at;
-                        }
-                }
+                next_timeout_id = g_timeout_add(sleep/1000, run, NULL);
         }
 
         /* If the execution got triggered by g_timeout_add,
@@ -123,22 +179,31 @@ static gboolean run(void *data)
 
 gboolean pause_signal(gpointer data)
 {
-        dunst_status(S_RUNNING, false);
+        (void)data;
+
+        dunst_status_int(S_PAUSE_LEVEL, MAX_PAUSE_LEVEL);
         wake_up();
+
+        signal_paused_propertieschanged();
 
         return G_SOURCE_CONTINUE;
 }
 
 gboolean unpause_signal(gpointer data)
 {
-        dunst_status(S_RUNNING, true);
+        (void)data;
+
+        dunst_status_int(S_PAUSE_LEVEL, 0);
         wake_up();
+
+        signal_paused_propertieschanged();
 
         return G_SOURCE_CONTINUE;
 }
 
 gboolean quit_signal(gpointer data)
 {
+        (void)data;
         g_main_loop_quit(mainloop);
 
         return G_SOURCE_CONTINUE;
@@ -151,22 +216,48 @@ static void teardown(void)
         queues_teardown();
 
         draw_deinit();
+
+        g_strfreev(config_paths);
+
+        g_slist_free_full(rules, (GDestroyNotify)rule_free);
+}
+
+void reload(char **const configs)
+{
+        guint length = g_strv_length(configs);
+        LOG_M("Reloading settings (with the %s files)", length != 0 ? "new" : "old");
+
+        pause_signal(NULL);
+
+        setup_done = false;
+        draw_deinit();
+
+        g_slist_free_full(rules, (GDestroyNotify)rule_free);
+        rules = NULL;
+
+        settings_free(&settings);
+        load_settings(length != 0 ? configs : config_paths);
+
+        draw_setup();
+        setup_done = true;
+
+        queues_reapply_all_rules();
+
+        unpause_signal(NULL);
 }
 
 int dunst_main(int argc, char *argv[])
 {
-
-        dunst_status(S_RUNNING, true);
+        dunst_status_int(S_PAUSE_LEVEL, 0);
         dunst_status(S_IDLE, false);
 
         queues_init();
 
         cmdline_load(argc, argv);
 
-        dunst_log_init(false);
+        dunst_log_init(DUNST_LOG_AUTO);
 
-        if (cmdline_get_bool("-v/-version", false, "Print version")
-            || cmdline_get_bool("--version", false, "Print version")) {
+        if (cmdline_get_bool("-v/-version/--version", false, "Print version")) {
                 print_version();
         }
 
@@ -174,25 +265,33 @@ int dunst_main(int argc, char *argv[])
         log_set_level_from_string(verbosity);
         g_free(verbosity);
 
-        char *cmdline_config_path;
-        cmdline_config_path =
-            cmdline_get_string("-conf/-config", NULL,
-                               "Path to configuration file");
-        load_settings(cmdline_config_path);
+        cmdline_usage_append("-conf/-config", "string", "Path to configuration file");
 
-        if (cmdline_get_bool("-h/-help", false, "Print help")
-            || cmdline_get_bool("--help", false, "Print help")) {
+        int start = 1, count = 1;
+        while (cmdline_get_string_offset("-conf/-config", NULL, start, &start))
+                count++;
+
+        // Leaves an extra space for the NULL
+        config_paths = g_malloc0(sizeof(char *) * count);
+        start = 1, count = 0;
+        char *path = NULL;
+
+        do {
+                path = cmdline_get_string_offset("-conf/-config", NULL, start, &start);
+                config_paths[count++] = path;
+        } while (path != NULL);
+
+        print_notifications = cmdline_get_bool("-print/--print", false, "Print notifications to stdout");
+
+        bool startup_notification = cmdline_get_bool("-startup_notification/--startup_notification",
+                        false, "Display a notification on startup.");
+
+        /* Help should always be the last to set up as calls to cmdline_get_* (as a side effect) add entries to the usage list. */
+        if (cmdline_get_bool("-h/-help/--help", false, "Print help")) {
                 usage(EXIT_SUCCESS);
         }
 
-        if (cmdline_get_bool("-print", false, "Print notifications to stdout")
-            || cmdline_get_bool("--print", false, "Print notifications to stdout")) {
-                settings.print_notifications = true;
-        }
-
-        settings.startup_notification = cmdline_get_bool("--startup_notification",
-                        0, "Display a notification on startup.");
-
+        load_settings(config_paths);
         int dbus_owner_id = dbus_init();
 
         mainloop = g_main_loop_new(NULL, FALSE);
@@ -207,7 +306,8 @@ int dunst_main(int argc, char *argv[])
         guint term_src = g_unix_signal_add(SIGTERM, quit_signal, NULL);
         guint int_src = g_unix_signal_add(SIGINT, quit_signal, NULL);
 
-        if (settings.startup_notification) {
+
+        if (startup_notification) {
                 struct notification *n = notification_create();
                 n->id = 0;
                 n->appname = g_strdup("dunst");
@@ -223,7 +323,12 @@ int dunst_main(int argc, char *argv[])
         }
 
         setup_done = true;
-        run(NULL);
+        run(GINT_TO_POINTER(DUNST_TIMER)); // The first run() is a scheduled one
+
+
+        // Set default_pause_level only after showing the startup notification
+        dunst_status_int(S_PAUSE_LEVEL, settings.default_pause_level);
+
         g_main_loop_run(mainloop);
         g_clear_pointer(&mainloop, g_main_loop_unref);
 
@@ -236,6 +341,8 @@ int dunst_main(int argc, char *argv[])
         dbus_teardown(dbus_owner_id);
 
         teardown();
+
+        settings_free(&settings);
 
         return 0;
 }
@@ -250,10 +357,20 @@ void usage(int exit_status)
 
 void print_version(void)
 {
-        printf
-            ("Dunst - A customizable and lightweight notification-daemon %s\n",
-             VERSION);
+        printf("Dunst - A customizable and lightweight notification-daemon %s\n", VERSION);
+#ifdef _CCDATE
+        printf("Compiled on %s with the following options:\n", STR_TO(_CCDATE));
+#endif
+
+        printf("X11 support: %s\n", X11_SUPPORT ? "enabled" : "disabled");
+        printf("Wayland support: %s\n", WAYLAND_SUPPORT ? "enabled" : "disabled");
+        printf("SYSCONFDIR set to: %s\n", SYSCONFDIR);
+
+#ifdef _CFLAGS
+        printf("Compiler flags: %s\n", STR_TO(_CFLAGS));
+#endif
+#ifdef _LDFLAGS
+        printf("Linker flags: %s\n", STR_TO(_LDFLAGS));
+#endif
         exit(EXIT_SUCCESS);
 }
-
-/* vim: set ft=c tabstop=8 shiftwidth=8 expandtab textwidth=0: */

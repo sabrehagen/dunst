@@ -8,6 +8,7 @@
 #include <cairo.h>
 
 #include "markup.h"
+#include "draw.h"
 
 #define DUNST_NOTIF_MAX_CHARS 50000
 
@@ -38,17 +39,20 @@ enum urgency {
 typedef struct _notification_private NotificationPrivate;
 
 struct notification_colors {
-        char *frame;
-        char *bg;
-        char *fg;
-        char *highlight;
+        struct color frame;
+        struct color bg;
+        struct color fg;
+        struct gradient *highlight;
 };
 
 struct notification {
         NotificationPrivate *priv;
-        int id;
+        gint id;
         char *dbus_client;
         bool dbus_valid;
+
+        // We keep the original notification properties here when it is modified
+        struct rule *original;
 
         char *appname;
         char *summary;
@@ -56,10 +60,12 @@ struct notification {
         char *category;
         char *desktop_entry;     /**< The desktop entry hint sent via every GApplication */
         enum urgency urgency;
+        int override_pause_level;
 
         cairo_surface_t *icon;         /**< The raw cached icon data used to draw */
         char *icon_id;           /**< Plain icon information, which acts as the icon's id.
                                       May be a hash for a raw icon or a name/path for a regular app icon. */
+        gint64 icon_time;        /**< Time of reception of the icon (or opening of the file in case of a path) */
         char *iconname;          /**< plain icon information (may be a path or just a name) as recieved from dbus.
                                    Use this to compare the icon name with rules. May also be modified by rules.*/
         char *icon_path;         /**< Full path to the notification's icon. */
@@ -80,8 +86,8 @@ struct notification {
         char *default_action_name; /**< The name of the action to be invoked on do_action */
 
         enum markup_mode markup;
-        const char *format;
-        const char **scripts;
+        char *format;
+        char **scripts;
         int script_count;
         struct notification_colors colors;
 
@@ -101,6 +107,7 @@ struct notification {
         enum behavior_fullscreen fullscreen; //!< The instruction what to do with it, when desktop enters fullscreen
         bool script_run;        /**< Has the script been executed already? */
         guint8 marked_for_closure;
+        guint8 marked_for_removal; /**< If set, the notification is marked for removal in history */
         bool word_wrap;
         PangoEllipsizeMode ellipsize;
         PangoAlignment alignment;
@@ -197,6 +204,8 @@ void notification_icon_replace_path(struct notification *n, const char *new_icon
  */
 void notification_icon_replace_data(struct notification *n, GVariant *new_icon);
 
+void notification_replace_format(struct notification *n, const char *format);
+
 /**
  * Run the script associated with the
  * given notification.
@@ -240,7 +249,7 @@ void notification_open_url(struct notification *n);
 
 /**
  * Open the context menu for the notification.
- * 
+ *
  * Convenience function that creates the GList and passes it to context_menu_for().
  */
 void notification_open_context_menu(struct notification *n);
@@ -264,5 +273,6 @@ const char *notification_urgency_to_string(const enum urgency urgency);
  */
 const char *enum_to_string_fullscreen(enum behavior_fullscreen in);
 
+void notification_keep_original(struct notification *n);
+
 #endif
-/* vim: set ft=c tabstop=8 shiftwidth=8 expandtab textwidth=0: */

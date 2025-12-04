@@ -91,6 +91,8 @@ TEST test_valid_parser_and_data_per_type(void)
                         case TYPE_TIME:
                         case TYPE_DOUBLE:
                         case TYPE_LENGTH:
+                        case TYPE_COLOR:
+                        case TYPE_GRADIENT:
                         case TYPE_INT: ; // no parser and no parser data needed
                                 gchar *error1 = g_strdup_printf("Parser of setting %s should be NULL. It's not needed for this type", curr.name);
                                 gchar *error2 = g_strdup_printf("Parser data of setting %s should be NULL. It's not needed for this type", curr.name);
@@ -143,4 +145,3 @@ SUITE(suite_settings_data)
         RUN_TEST(test_value_non_null);
         RUN_TEST(test_valid_parser_and_data_per_type);
 }
-/* vim: set ft=c tabstop=8 shiftwidth=8 expandtab textwidth=0: */

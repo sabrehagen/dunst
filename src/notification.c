@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "dbus.h"
@@ -25,6 +26,7 @@
 #include "utils.h"
 #include "draw.h"
 #include "icon-lookup.h"
+#include "settings_data.h"
 
 static void notification_extract_urls(struct notification *n);
 static void notification_format_message(struct notification *n);
@@ -52,34 +54,44 @@ void notification_print(const struct notification *n)
 {
         //TODO: use logging info for this
         printf("{\n");
-        printf("\tappname: '%s'\n", n->appname);
-        printf("\tsummary: '%s'\n", n->summary);
-        printf("\tbody: '%s'\n", n->body);
-        printf("\ticon: '%s'\n", n->iconname);
-        printf("\traw_icon set: %s\n", (n->icon_id && !STR_EQ(n->iconname, n->icon_id)) ? "true" : "false");
-        printf("\ticon_id: '%s'\n", n->icon_id);
+        printf("\tappname: '%s'\n", STR_NN(n->appname));
+        printf("\tsummary: '%s'\n", STR_NN(n->summary));
+        printf("\tbody: '%s'\n", STR_NN(n->body));
+        printf("\ticon: '%s'\n", STR_NN(n->iconname));
+        printf("\traw_icon: %s\n", (n->icon_id && STR_EMPTY(n->iconname)) ? "true" : "false");
+        printf("\ticon_id: '%s'\n", STR_NN(n->icon_id));
+        printf("\ticon_time: %"G_GINT64_FORMAT"\n", n->icon_time);
         printf("\tdesktop_entry: '%s'\n", n->desktop_entry ? n->desktop_entry : "");
-        printf("\tcategory: %s\n", n->category);
-        printf("\ttimeout: %ld\n", n->timeout/1000);
+        printf("\tcategory: '%s'\n", STR_NN(n->category));
+        printf("\ttimeout: %"G_GINT64_FORMAT"\n", n->timeout/1000);
+        printf("\tstart: %"G_GINT64_FORMAT"\n", n->start);
+        printf("\ttimestamp: %"G_GINT64_FORMAT"\n", n->timestamp);
         printf("\turgency: %s\n", notification_urgency_to_string(n->urgency));
         printf("\ttransient: %d\n", n->transient);
-        printf("\tformatted: '%s'\n", n->msg);
-        printf("\tfg: %s\n", n->colors.fg);
-        printf("\tbg: %s\n", n->colors.bg);
-        printf("\thighlight: %s\n", n->colors.highlight);
-        printf("\tframe: %s\n", n->colors.frame);
+        printf("\tformatted: '%s'\n", STR_NN(n->msg));
+        char buf[10];
+        printf("\tfg: %s\n", STR_NN(color_to_string(n->colors.fg, buf)));
+        printf("\tbg: %s\n", STR_NN(color_to_string(n->colors.bg, buf)));
+        printf("\tframe: %s\n", STR_NN(color_to_string(n->colors.frame, buf)));
+
+        char *grad = gradient_to_string(n->colors.highlight);
+        printf("\thighlight: %s\n", STR_NN(grad));
+        g_free(grad);
+
         printf("\tfullscreen: %s\n", enum_to_string_fullscreen(n->fullscreen));
-        printf("\tformat: %s\n", n->format);
+        printf("\tformat: '%s'\n", STR_NN(n->format));
         printf("\tprogress: %d\n", n->progress);
-        printf("\tstack_tag: %s\n", (n->stack_tag ? n->stack_tag : ""));
+        printf("\tstack_tag: '%s'\n", (n->stack_tag ? n->stack_tag : ""));
         printf("\tid: %d\n", n->id);
         if (n->urls) {
                 char *urls = string_replace_all("\n", "\t\t\n", g_strdup(n->urls));
                 printf("\turls:\n");
                 printf("\t{\n");
-                printf("\t\t%s\n", urls);
+                printf("\t\t'%s'\n", STR_NN(urls));
                 printf("\t}\n");
                 g_free(urls);
+        } else {
+                printf("\turls: {}\n");
         }
         if (g_hash_table_size(n->actions) == 0) {
                 printf("\tactions: {}\n");
@@ -89,14 +101,14 @@ void notification_print(const struct notification *n)
                 g_hash_table_iter_init(&iter, n->actions);
                 printf("\tactions: {\n");
                 while (g_hash_table_iter_next(&iter, &p_key, &p_value))
-                        printf("\t\t\"%s\": \"%s\"\n", (char*)p_key, (char*)p_value);
+                        printf("\t\t\"%s\": \"%s\"\n", (char*)p_key, STR_NN((char*)p_value));
                 printf("\t}\n");
         }
         printf("\tscript_count: %d\n", n->script_count);
         if (n->script_count > 0) {
                 printf("\tscripts: ");
                 for (int i = 0; i < n->script_count; i++) {
-                        printf("'%s' ",n->scripts[i]);
+                        printf("'%s' ", STR_NN(n->scripts[i]));
                 }
                 printf("\n");
         }
@@ -140,8 +152,8 @@ void notification_run_script(struct notification *n)
                                 // Set environment variables
                                 gchar *n_id_str = g_strdup_printf("%i", n->id);
                                 gchar *n_progress_str = g_strdup_printf("%i", n->progress);
-                                gchar *n_timeout_str = g_strdup_printf("%li", n->timeout/1000);
-                                gchar *n_timestamp_str = g_strdup_printf("%li", n->timestamp / 1000);
+                                gchar *n_timeout_str = g_strdup_printf("%"G_GINT64_FORMAT, n->timeout/1000);
+                                gchar *n_timestamp_str = g_strdup_printf("%"G_GINT64_FORMAT, n->timestamp / 1000);
                                 safe_setenv("DUNST_APP_NAME",  appname);
                                 safe_setenv("DUNST_SUMMARY",   summary);
                                 safe_setenv("DUNST_BODY",      body);
@@ -154,7 +166,6 @@ void notification_run_script(struct notification *n)
                                 safe_setenv("DUNST_URLS",      n->urls);
                                 safe_setenv("DUNST_TIMEOUT",   n_timeout_str);
                                 safe_setenv("DUNST_TIMESTAMP", n_timestamp_str);
-                                safe_setenv("DUNST_STACK_TAG", n->stack_tag);
                                 safe_setenv("DUNST_DESKTOP_ENTRY", n->desktop_entry);
 
                                 execlp(script,
@@ -195,16 +206,36 @@ const char *notification_urgency_to_string(const enum urgency urgency)
 /* see notification.h */
 int notification_cmp(const struct notification *a, const struct notification *b)
 {
-        if (settings.sort && a->urgency != b->urgency) {
-                return b->urgency - a->urgency;
+        const struct notification *a_order;
+        const struct notification *b_order;
+        if(settings.sort == SORT_TYPE_UPDATE && settings.origin & ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM){
+                a_order = b;
+                b_order = a;
         } else {
-                return a->id - b->id;
+                a_order = a;
+                b_order = b;
         }
+
+        if(settings.sort == SORT_TYPE_URGENCY_ASCENDING){
+                if(a_order->urgency != b_order->urgency){
+                        return a_order->urgency - b_order->urgency;
+                }
+        } else if (settings.sort == SORT_TYPE_URGENCY_DESCENDING) {
+                if(a_order->urgency != b_order->urgency){
+                        return b_order->urgency - a_order->urgency;
+                }
+        } else if(settings.sort == SORT_TYPE_UPDATE){
+                return b_order->timestamp - a_order->timestamp;
+        }
+
+        return a_order->id - b_order->id;
 }
 
 /* see notification.h */
 int notification_cmp_data(const void *va, const void *vb, void *data)
 {
+        (void)data;
+
         struct notification *a = (struct notification *) va;
         struct notification *b = (struct notification *) vb;
 
@@ -216,8 +247,10 @@ bool notification_is_duplicate(const struct notification *a, const struct notifi
         return STR_EQ(a->appname, b->appname)
             && STR_EQ(a->summary, b->summary)
             && STR_EQ(a->body, b->body)
-            && (a->icon_position != ICON_OFF ? STR_EQ(a->icon_id, b->icon_id) : 1)
-            && a->urgency == b->urgency;
+            && a->urgency == b->urgency
+            && (a->icon_position == ICON_OFF || b->icon_position == ICON_OFF
+                            || (a->icon_id && b->icon_id ? STR_EQ(a->icon_id, b->icon_id)
+                            : (a->iconname && b->iconname ? STR_EQ(a->iconname, b->iconname) : 1)));
 }
 
 bool notification_is_locked(struct notification *n) {
@@ -272,59 +305,61 @@ void notification_unref(struct notification *n)
         if (!g_atomic_int_dec_and_test(&n->priv->refcount))
                 return;
 
+        if (n->original)
+                rule_free(n->original);
+
+        g_free(n->dbus_client);
         g_free(n->appname);
         g_free(n->summary);
         g_free(n->body);
-        g_free(n->iconname);
-        g_free(n->default_icon_name);
-        g_free(n->icon_path);
-        g_free(n->msg);
-        g_free(n->dbus_client);
         g_free(n->category);
-        g_free(n->text_to_render);
-        g_free(n->urls);
-        g_free(n->colors.fg);
-        g_free(n->colors.bg);
-        g_free(n->colors.highlight);
-        g_free(n->colors.frame);
-        g_free(n->stack_tag);
         g_free(n->desktop_entry);
+
+        g_free(n->icon_id);
+        g_free(n->iconname);
+        g_free(n->icon_path);
+        g_free(n->default_icon_name);
 
         g_hash_table_unref(n->actions);
         g_free(n->default_action_name);
 
         if (n->icon)
                 cairo_surface_destroy(n->icon);
-        g_free(n->icon_id);
 
         notification_private_free(n->priv);
 
-        if (n->script_count > 0) {
-                g_free(n->scripts);
-        }
+        gradient_release(n->colors.highlight);
+
+        g_free(n->format);
+        g_strfreev(n->scripts);
+        g_free(n->stack_tag);
+
+        g_free(n->msg);
+        g_free(n->text_to_render);
+        g_free(n->urls);
 
         g_free(n);
 }
 
 void notification_transfer_icon(struct notification *from, struct notification *to)
 {
-        if (from->iconname && to->iconname
-                        && strcmp(from->iconname, to->iconname) == 0){
-                // Icons are the same. Transfer icon surface
-                to->icon = from->icon;
+        // Transfer icon surface
+        to->icon = from->icon;
+        to->icon_id = from->icon_id;
+        to->icon_time = from->icon_time;
 
-                // prevent the surface being freed by the old notification
-                from->icon = NULL;
-        }
+        // Prevent the surface being freed by the old notification
+        from->icon = NULL;
+        from->icon_id = NULL;
 }
 
 void notification_icon_replace_path(struct notification *n, const char *new_icon)
 {
-        ASSERT_OR_RET(n,);
+        ASSERT_OR_RET(n && n->icon_position != ICON_OFF,);
         ASSERT_OR_RET(new_icon,);
-        if(n->iconname && n->icon && strcmp(n->iconname, new_icon) == 0) {
+
+        if (n->iconname && n->icon && STR_EQ(n->iconname, new_icon))
                 return;
-        }
 
         // make sure it works, even if n->iconname is passed as new_icon
         if (n->iconname != new_icon) {
@@ -339,21 +374,22 @@ void notification_icon_replace_path(struct notification *n, const char *new_icon
         g_free(n->icon_path);
         n->icon_path = get_path_from_icon_name(new_icon, n->min_icon_size);
         if (n->icon_path) {
-                GdkPixbuf *pixbuf = get_pixbuf_from_file(n->icon_path,
+                GdkPixbuf *pixbuf = get_pixbuf_from_file(n->icon_path, &n->icon_id,
                                 n->min_icon_size, n->max_icon_size,
                                 draw_get_scale());
                 if (pixbuf) {
                         n->icon = gdk_pixbuf_to_cairo_surface(pixbuf);
+                        n->icon_time = time_now();
                         g_object_unref(pixbuf);
                 } else {
-                        LOG_W("No icon found in path: '%s'", n->icon_path);
+                        LOG_W("Failed to load icon from path: '%s'", n->icon_path);
                 }
         }
 }
 
 void notification_icon_replace_data(struct notification *n, GVariant *new_icon)
 {
-        ASSERT_OR_RET(n,);
+        ASSERT_OR_RET(n && n->icon_position != ICON_OFF,);
         ASSERT_OR_RET(new_icon,);
 
         cairo_surface_destroy(n->icon);
@@ -363,8 +399,16 @@ void notification_icon_replace_data(struct notification *n, GVariant *new_icon)
         GdkPixbuf *icon = icon_get_for_data(new_icon, &n->icon_id,
                         draw_get_scale(), n->min_icon_size, n->max_icon_size);
         n->icon = gdk_pixbuf_to_cairo_surface(icon);
-        if (icon)
+        if (icon) {
+                n->icon_time = time_now();
                 g_object_unref(icon);
+        }
+}
+
+void notification_replace_format(struct notification *n, const char *format)
+{
+        g_free(n->format);
+        n->format = g_strdup(format);
 }
 
 /* see notification.h */
@@ -409,7 +453,7 @@ struct notification *notification_create(void)
         /* Unparameterized default values */
         n->first_render = true;
         n->markup = MARKUP_FULL;
-        n->format = settings.format;
+        n->format = g_strdup(settings.format);
 
         n->timestamp = time_monotonic_now();
 
@@ -429,10 +473,18 @@ struct notification *notification_create(void)
         n->max_icon_size = 32;
         n->receiving_raw_icon = false;
 
+        struct color invalid = COLOR_UNINIT;
+        n->colors.fg = invalid;
+        n->colors.bg = invalid;
+        n->colors.frame = invalid;
+        n->colors.highlight = NULL;
+
         n->script_run = false;
         n->dbus_valid = false;
 
         n->fullscreen = FS_SHOW;
+
+        n->original = NULL;
 
         n->actions = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
         n->default_action_name = g_strdup("default");
@@ -475,24 +527,26 @@ void notification_init(struct notification *n)
                 default:
                         g_error("Unhandled urgency type: %d", n->urgency);
         }
-        if (!n->colors.fg)
-                n->colors.fg = g_strdup(defcolors.fg);
-        if (!n->colors.bg)
-                n->colors.bg = g_strdup(defcolors.bg);
-        if (!n->colors.highlight)
-                n->colors.highlight = g_strdup(defcolors.highlight);
-        if (!n->colors.frame)
-                n->colors.frame = g_strdup(defcolors.frame);
+        if (!COLOR_VALID(n->colors.fg)) n->colors.fg = defcolors.fg;
+        if (!COLOR_VALID(n->colors.bg)) n->colors.bg = defcolors.bg;
+        if (!COLOR_VALID(n->colors.frame)) n->colors.frame = defcolors.frame;
+
+        if (!GRADIENT_VALID(n->colors.highlight)) {
+                gradient_release(n->colors.highlight);
+                n->colors.highlight = gradient_acquire(defcolors.highlight);
+        }
 
         /* Sanitize misc hints */
         if (n->progress < 0)
                 n->progress = -1;
 
+        n->override_pause_level = 0;
+
         /* Process rules */
         rule_apply_all(n);
 
         if (g_str_has_prefix(n->summary, "DUNST_COMMAND_")) {
-                char *msg = "DUNST_COMMAND_* has been removed, please switch to dunstctl. See #830 for more details. https://github.com/dunst-project/dunst/pull/830";
+                const char *msg = "DUNST_COMMAND_* has been removed, please switch to dunstctl. See #830 for more details. https://github.com/dunst-project/dunst/pull/830";
                 LOG_W("%s", msg);
                 n->body = string_append(n->body, msg, "\n");
         }
@@ -505,7 +559,6 @@ void notification_init(struct notification *n)
         }
         if (!n->icon && !n->iconname)
                 n->iconname = g_strdup(settings.icons[n->urgency]);
-
 
         /* UPDATE derived fields */
         notification_extract_urls(n);
@@ -522,6 +575,7 @@ static void notification_format_message(struct notification *n)
         g_clear_pointer(&n->msg, g_free);
 
         n->msg = string_replace_all("\\n", "\n", g_strdup(n->format));
+        n->msg = string_replace_all("\\t", "\t", n->msg);
 
         /* replace all formatter */
         for(char *substr = strchr(n->msg, '%');
@@ -552,6 +606,20 @@ static void notification_format_message(struct notification *n)
                                 &substr,
                                 n->body,
                                 n->markup);
+                        break;
+                case 'c':
+                        notification_replace_single_field(
+                                &n->msg,
+                                &substr,
+                                n->category,
+                                MARKUP_NO);
+                        break;
+                case 'S':
+                        notification_replace_single_field(
+                                &n->msg,
+                                &substr,
+                                n->stack_tag ? n->stack_tag : "",
+                                MARKUP_NO);
                         break;
                 case 'I':
                         icon_tmp = g_strdup(n->iconname);
@@ -683,15 +751,14 @@ void notification_update_text_to_render(struct notification *n)
 
                 char *new_buf;
                 if (hours > 0) {
-                        new_buf =
-                            g_strdup_printf("%s (%ldh %ldm %lds old)", buf, hours,
-                                            minutes, seconds);
+                        new_buf = g_strdup_printf("%s (%"G_GINT64_FORMAT"h %"G_GINT64_FORMAT"m %"G_GINT64_FORMAT"s old)",
+                                                  buf, hours, minutes, seconds);
                 } else if (minutes > 0) {
-                        new_buf =
-                            g_strdup_printf("%s (%ldm %lds old)", buf, minutes,
-                                            seconds);
+                        new_buf = g_strdup_printf("%s (%"G_GINT64_FORMAT"m %"G_GINT64_FORMAT"s old)",
+                                                  buf, minutes, seconds);
                 } else {
-                        new_buf = g_strdup_printf("%s (%lds old)", buf, seconds);
+                        new_buf = g_strdup_printf("%s (%"G_GINT64_FORMAT"s old)",
+                                                  buf, seconds);
                 }
 
                 g_free(buf);
@@ -705,7 +772,7 @@ void notification_update_text_to_render(struct notification *n)
 void notification_do_action(struct notification *n)
 {
         assert(n->default_action_name);
-        
+
         if (g_hash_table_size(n->actions)) {
                 if (g_hash_table_contains(n->actions, n->default_action_name)) {
                         signal_action_invoked(n, n->default_action_name);
@@ -719,6 +786,9 @@ void notification_do_action(struct notification *n)
                 }
                 notification_open_context_menu(n);
 
+        } else if (n->urls) {
+                // Try urls otherwise
+                notification_open_url(n);
         }
 }
 
@@ -749,4 +819,10 @@ void notification_invalidate_actions(struct notification *n) {
         g_hash_table_remove_all(n->actions);
 }
 
-/* vim: set ft=c tabstop=8 shiftwidth=8 expandtab textwidth=0: */
+void notification_keep_original(struct notification *n)
+{
+        if (n->original) return;
+        n->original = g_malloc0(sizeof(struct rule));
+        *n->original = empty_rule;
+        n->original->name = g_strdup("original");
+}

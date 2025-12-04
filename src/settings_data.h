@@ -112,7 +112,7 @@ struct setting {
 /*
  *   How to add/change a rule
  *   ------------------------
- * 
+ *
  * - Add variable to `struct rules` in `rules.h` (make sure to read the comment
  *   at the top of the struct)
  * - Add variable to to `struct notification` in `notification.h`
@@ -122,6 +122,7 @@ struct setting {
  * - Add the default rule value in `settings_data.h` (usually -1 or NULL)
  * - Set default value in notification.c (`notification_create`). This is where
  *   the real default is set.
+ * - Add the rule to the output of `dbus_cb_dunst_RuleList` in `dbus.c`.
  * - Free the variable in `notification.c` if dynamically allocated.
  * - Free the variable in `rules.c` if dynamically allocated.
  * - Remove the setting from the global settings struct in `settings.h`.
@@ -156,15 +157,19 @@ static const struct rule empty_rule = {
         .alignment       = -1,
         .hide_text       = -1,
         .new_icon        = NULL,
-        .fg              = NULL,
-        .bg              = NULL,
-        .format          = NULL,
         .default_icon    = NULL,
+        .fg              = COLOR_UNINIT,
+        .bg              = COLOR_UNINIT,
+        .highlight       = NULL,
+        .fc              = COLOR_UNINIT,
+        .format          = NULL,
         .script          = NULL,
         .enabled         = true,
         .progress_bar_alignment   = -1,
         .min_icon_size   = -1,
         .max_icon_size   = -1,
+        .fullscreen      = FS_NULL,
+        .override_pause_level = -1
 };
 
 
@@ -219,6 +224,32 @@ static const struct string_to_enum_def boolean_enum_data[] = {
         {"y", false },
         {"N", false },
         {"Y", true },
+        ENUM_END,
+};
+
+static const struct string_to_enum_def sort_type_enum_data[] = {
+        {"True", SORT_TYPE_URGENCY_DESCENDING },
+        {"true", SORT_TYPE_URGENCY_DESCENDING },
+        {"On", SORT_TYPE_URGENCY_DESCENDING },
+        {"on", SORT_TYPE_URGENCY_DESCENDING },
+        {"Yes", SORT_TYPE_URGENCY_DESCENDING },
+        {"yes", SORT_TYPE_URGENCY_DESCENDING },
+        {"1", SORT_TYPE_URGENCY_DESCENDING },
+        {"False", SORT_TYPE_ID },
+        {"false", SORT_TYPE_ID },
+        {"Off", SORT_TYPE_ID },
+        {"off", SORT_TYPE_ID },
+        {"No", SORT_TYPE_ID },
+        {"no", SORT_TYPE_ID },
+        {"0", SORT_TYPE_ID },
+        {"n", SORT_TYPE_ID },
+        {"y", SORT_TYPE_ID },
+        {"N", SORT_TYPE_ID },
+        {"Y", SORT_TYPE_URGENCY_DESCENDING },
+        {"id",                  SORT_TYPE_ID},
+        {"urgency_ascending",   SORT_TYPE_URGENCY_ASCENDING },
+        {"urgency_descending",  SORT_TYPE_URGENCY_DESCENDING },
+        {"update",  SORT_TYPE_UPDATE },
         ENUM_END,
 };
 
@@ -281,6 +312,7 @@ static const struct string_to_enum_def mouse_action_enum_data[] = {
         {"context",        MOUSE_CONTEXT },
         {"context_all",    MOUSE_CONTEXT_ALL },
         {"open_url",       MOUSE_OPEN_URL },
+        {"remove_current", MOUSE_REMOVE_CURRENT },
         ENUM_END,
 };
 
@@ -318,6 +350,20 @@ static const struct string_to_enum_def origin_enum_data[] = {
         ENUM_END,
 };
 
+static const struct string_to_enum_def corners_enum_data[] = {
+        { "top-left", C_TOP_LEFT },
+        { "top-right", C_TOP_RIGHT },
+        { "bottom-left", C_BOT_LEFT },
+        { "bottom-right", C_BOT_RIGHT },
+        { "left", C_LEFT },
+        { "right", C_RIGHT },
+        { "bottom", C_BOT },
+        { "top", C_TOP },
+        { "all", C_ALL },
+        { "none", C_NONE },
+        ENUM_END,
+};
+
 static const struct setting allowed_settings[] = {
         // These icon settings have to be above the icon rule
         {
@@ -325,7 +371,7 @@ static const struct setting allowed_settings[] = {
                 .section = "urgency_low",
                 .description = "Icon for notifications with low urgency",
                 .type = TYPE_STRING,
-                .default_value = "dialog-information",
+                .default_value = "",
                 .value = &settings.icons[URG_LOW],
                 .parser = NULL,
                 .parser_data = NULL,
@@ -335,7 +381,7 @@ static const struct setting allowed_settings[] = {
                 .section = "urgency_normal",
                 .description = "Icon for notifications with normal urgency",
                 .type = TYPE_STRING,
-                .default_value = "dialog-information",
+                .default_value = "",
                 .value = &settings.icons[URG_NORM],
                 .parser = NULL,
                 .parser_data = NULL,
@@ -345,7 +391,7 @@ static const struct setting allowed_settings[] = {
                 .section = "urgency_critical",
                 .description = "Icon for notifications with critical urgency",
                 .type = TYPE_STRING,
-                .default_value = "dialog-warning",
+                .default_value = "",
                 .value = &settings.icons[URG_CRIT],
                 .parser = NULL,
                 .parser_data = NULL,
@@ -478,7 +524,7 @@ static const struct setting allowed_settings[] = {
                 .name = "background",
                 .section = "*",
                 .description = "The background color of the notification.",
-                .type = TYPE_STRING,
+                .type = TYPE_COLOR,
                 .default_value = "*",
                 .value = NULL,
                 .parser = NULL,
@@ -500,7 +546,7 @@ static const struct setting allowed_settings[] = {
                 .name = "foreground",
                 .section = "*",
                 .description = "The foreground color of the notification.",
-                .type = TYPE_STRING,
+                .type = TYPE_COLOR,
                 .default_value = "*",
                 .value = NULL,
                 .parser = NULL,
@@ -511,7 +557,7 @@ static const struct setting allowed_settings[] = {
                 .name = "highlight",
                 .section = "*",
                 .description = "The highlight color of the notification.",
-                .type = TYPE_STRING,
+                .type = TYPE_GRADIENT,
                 .default_value = "*",
                 .value = NULL,
                 .parser = NULL,
@@ -522,7 +568,7 @@ static const struct setting allowed_settings[] = {
                 .name = "default_icon",
                 .section = "*",
                 .description = "The default icon that is used when no icon is passed",
-                .type = TYPE_STRING,
+                .type = TYPE_PATH,
                 .default_value = "*",
                 .value = NULL,
                 .parser = NULL,
@@ -728,6 +774,36 @@ static const struct setting allowed_settings[] = {
                 .rule_offset = offsetof(struct rule, enabled),
         },
         {
+                .name = "corners",
+                .section = "global",
+                .description = "Select the corners to round",
+                .type = TYPE_CUSTOM,
+                .default_value = "all",
+                .value = &settings.corners,
+                .parser = string_parse_corners,
+                .parser_data = corners_enum_data,
+        },
+        {
+                .name = "progress_bar_corners",
+                .section = "global",
+                .description = "Select the corners to round for the progress bar",
+                .type = TYPE_CUSTOM,
+                .default_value = "all",
+                .value = &settings.progress_bar_corners,
+                .parser = string_parse_corners,
+                .parser_data = corners_enum_data,
+        },
+        {
+                .name = "icon_corners",
+                .section = "global",
+                .description = "Select the corners to round for the icon image",
+                .type = TYPE_CUSTOM,
+                .default_value = "all",
+                .value = &settings.icon_corners,
+                .parser = string_parse_corners,
+                .parser_data = corners_enum_data,
+        },
+        {
                 .name = "progress_bar_horizontal_alignment",
                 .section = "*",
                 .description = "Set the horizontal alignment of the progress bar",
@@ -760,6 +836,17 @@ static const struct setting allowed_settings[] = {
                 .parser_data = NULL,
                 .rule_offset = offsetof(struct rule, max_icon_size),
         },
+        {
+                .name = "override_pause_level",
+                .section = "*",
+                .description = "TODO",
+                .type = TYPE_INT,
+                .default_value = "-1",
+                .value = NULL,
+                .parser = NULL,
+                .parser_data = NULL,
+                .rule_offset = offsetof(struct rule, override_pause_level),
+        },
         // end of modifying rules
 
         // other settings below
@@ -767,7 +854,7 @@ static const struct setting allowed_settings[] = {
                 .name = "frame_color",
                 .section = "*",
                 .description = "Color of the frame around the window",
-                .type = TYPE_STRING,
+                .type = TYPE_COLOR,
                 .default_value = "#888888",
                 .value = &settings.frame_color,
                 .parser = NULL,
@@ -817,12 +904,12 @@ static const struct setting allowed_settings[] = {
         {
                 .name = "sort",
                 .section = "global",
-                .description = "Sort notifications by urgency and date?",
+                .description = "Sort type by id/urgency/update",
                 .type = TYPE_CUSTOM,
                 .default_value = "true",
                 .value = &settings.sort,
                 .parser = string_parse_enum,
-                .parser_data = boolean_enum_data,
+                .parser_data = sort_type_enum_data,
         },
         {
                 .name = "indicate_hidden",
@@ -868,11 +955,11 @@ static const struct setting allowed_settings[] = {
                 .name = "monitor",
                 .section = "global",
                 .description = "On which monitor should the notifications be displayed",
-                .type = TYPE_INT,
+                .type = TYPE_CUSTOM,
                 .default_value = "0",
                 .value = &settings.monitor,
-                .parser = NULL,
-                .parser_data = NULL,
+                .parser = string_parse_maybe_int,
+                .parser_data = &settings.monitor_num,
         },
         {
                 .name = "title",
@@ -1134,6 +1221,26 @@ static const struct setting allowed_settings[] = {
                 .parser = string_parse_bool,
                 .parser_data = boolean_enum_data,
         },
+        {
+                .name = "gap_size",
+                .section = "global",
+                .description = "Size of gap between notifications",
+                .type = TYPE_INT,
+                .default_value = "0",
+                .value = &settings.gap_size,
+                .parser = NULL,
+                .parser_data = NULL,
+        },
+        {
+                .name = "default_pause_level",
+                .section = "global",
+                .description = "Start dunst with a this pause level set.",
+                .type = TYPE_INT,
+                .default_value = "0",
+                .value = &settings.default_pause_level,
+                .parser = NULL,
+                .parser_data = NULL,
+        },
         // manual extractions below
         {
                 .name = "follow",
@@ -1200,7 +1307,7 @@ static const struct setting allowed_settings[] = {
                 .section = "global",
                 .description = "Action of middle click event",
                 .type = TYPE_LIST,
-                .default_value = "do_action, close_current",
+                .default_value = "do_action, remove_current",
                 .value = &settings.mouse_middle_click,
                 .parser = NULL,
                 .parser_data = GINT_TO_POINTER(MOUSE_LIST),
@@ -1274,7 +1381,7 @@ static const struct setting allowed_settings[] = {
                 .name = "background",
                 .section = "urgency_low",
                 .description = "Background color for notifications with low urgency",
-                .type = TYPE_STRING,
+                .type = TYPE_COLOR,
                 .default_value = "#222222",
                 .value = &settings.colors_low.bg,
                 .parser = NULL,
@@ -1284,7 +1391,7 @@ static const struct setting allowed_settings[] = {
                 .name = "foreground",
                 .section = "urgency_low",
                 .description = "Foreground color for notifications with low urgency",
-                .type = TYPE_STRING,
+                .type = TYPE_COLOR,
                 .default_value = "#888888",
                 .value = &settings.colors_low.fg,
                 .parser = NULL,
@@ -1294,7 +1401,7 @@ static const struct setting allowed_settings[] = {
                 .name = "highlight",
                 .section = "urgency_low",
                 .description = "Highlight color for notifications with low urgency",
-                .type = TYPE_STRING,
+                .type = TYPE_GRADIENT,
                 .default_value = "#7f7fff",
                 .value = &settings.colors_low.highlight,
                 .parser = NULL,
@@ -1304,7 +1411,7 @@ static const struct setting allowed_settings[] = {
                 .name = "frame_color",
                 .section = "urgency_low",
                 .description = "Frame color for notifications with low urgency",
-                .type = TYPE_STRING,
+                .type = TYPE_COLOR,
                 .default_value = "#888888",
                 .value = &settings.colors_low.frame,
                 .parser = NULL,
@@ -1324,7 +1431,7 @@ static const struct setting allowed_settings[] = {
                 .name = "background",
                 .section = "urgency_normal",
                 .description = "Background color for notifications with normal urgency",
-                .type = TYPE_STRING,
+                .type = TYPE_COLOR,
                 .default_value = "#285577",
                 .value = &settings.colors_norm.bg,
                 .parser = NULL,
@@ -1334,7 +1441,7 @@ static const struct setting allowed_settings[] = {
                 .name = "foreground",
                 .section = "urgency_normal",
                 .description = "Foreground color for notifications with normal urgency",
-                .type = TYPE_STRING,
+                .type = TYPE_COLOR,
                 .default_value = "#ffffff",
                 .value = &settings.colors_norm.fg,
                 .parser = NULL,
@@ -1344,7 +1451,7 @@ static const struct setting allowed_settings[] = {
                 .name = "highlight",
                 .section = "urgency_normal",
                 .description = "Highlight color for notifications with normal urgency",
-                .type = TYPE_STRING,
+                .type = TYPE_GRADIENT,
                 .default_value = "#1745d1",
                 .value = &settings.colors_norm.highlight,
                 .parser = NULL,
@@ -1354,7 +1461,7 @@ static const struct setting allowed_settings[] = {
                 .name = "frame_color",
                 .section = "urgency_normal",
                 .description = "Frame color for notifications with normal urgency",
-                .type = TYPE_STRING,
+                .type = TYPE_COLOR,
                 .default_value = "#888888",
                 .value = &settings.colors_norm.frame,
                 .parser = NULL,
@@ -1374,7 +1481,7 @@ static const struct setting allowed_settings[] = {
                 .name = "background",
                 .section = "urgency_critical",
                 .description = "Background color for notifications with critical urgency",
-                .type = TYPE_STRING,
+                .type = TYPE_COLOR,
                 .default_value = "#900000",
                 .value = &settings.colors_crit.bg,
                 .parser = NULL,
@@ -1384,7 +1491,7 @@ static const struct setting allowed_settings[] = {
                 .name = "foreground",
                 .section = "urgency_critical",
                 .description = "Foreground color for notifications with ciritical urgency",
-                .type = TYPE_STRING,
+                .type = TYPE_COLOR,
                 .default_value = "#ffffff",
                 .value = &settings.colors_crit.fg,
                 .parser = NULL,
@@ -1394,7 +1501,7 @@ static const struct setting allowed_settings[] = {
                 .name = "highlight",
                 .section = "urgency_critical",
                 .description = "Highlight color for notifications with ciritical urgency",
-                .type = TYPE_STRING,
+                .type = TYPE_GRADIENT,
                 .default_value = "#ff6666",
                 .value = &settings.colors_crit.highlight,
                 .parser = NULL,
@@ -1404,7 +1511,7 @@ static const struct setting allowed_settings[] = {
                 .name = "frame_color",
                 .section = "urgency_critical",
                 .description = "Frame color for notifications with critical urgency",
-                .type = TYPE_STRING,
+                .type = TYPE_COLOR,
                 .default_value = "#ff0000",
                 .value = &settings.colors_crit.frame,
                 .parser = NULL,
@@ -1443,9 +1550,9 @@ static const struct setting allowed_settings[] = {
         {
                 .name = "height",
                 .section = "global",
-                .description = "The maximum height of a single notification, excluding the frame.",
-                .type = TYPE_INT,
-                .default_value = "300",
+                .description = "The height of a notification, excluding the frame.",
+                .type = TYPE_LENGTH,
+                .default_value = "(0, 300)",
                 .value = &settings.height,
                 .parser = NULL,
                 .parser_data = NULL,
@@ -1454,11 +1561,11 @@ static const struct setting allowed_settings[] = {
                 .name = "offset",
                 .section = "global",
                 .description = "The offset of the notification from the origin.",
-                .type = TYPE_LIST,
-                .default_value = "10x50",
+                .type = TYPE_LENGTH,
+                .default_value = "(10, 50)",
                 .value = &settings.offset,
                 .parser = NULL,
-                .parser_data = GINT_TO_POINTER(OFFSET_LIST),
+                .parser_data = NULL,
         },
         {
                 .name = "notification_limit",
@@ -1512,16 +1619,6 @@ static const struct setting allowed_settings[] = {
                 .parser = NULL,
                 .parser_data = NULL,
         },
-        {
-                .name = "gap_size",
-                .section = "global",
-                .description = "Size of gap between notifications",
-                .type = TYPE_INT,
-                .default_value = "0",
-                .value = &settings.gap_size,
-                .parser = NULL,
-                .parser_data = NULL,
-        },
 };
+
 #endif
-/* vim: set ft=c tabstop=8 shiftwidth=8 expandtab textwidth=0: */

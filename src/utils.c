@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include <wordexp.h>
 
 #include "log.h"
 #include "settings_data.h"
@@ -179,16 +180,34 @@ int string_array_length(char **s)
 /* see utils.h */
 char *string_to_path(char *string)
 {
+        ASSERT_OR_RET(string, string);
 
-        if (string && STRN_EQ(string, "~/", 2)) {
-                char *home = g_strconcat(user_get_home(), "/", NULL);
-
-                string = string_replace_at(string, 0, 2, home);
-
-                g_free(home);
+        wordexp_t we;
+        switch (wordexp(string, &we, WRDE_NOCMD | WRDE_UNDEF)) {
+                case 0:
+                        break;
+                case WRDE_BADCHAR:
+                        LOG_W("Expansion of \"%s\" failed. It contains invalid characters.", string);
+                        return string;
+                case WRDE_BADVAL:
+                        LOG_W("Expansion of \"%s\" failed. It contains an undefined variable.", string);
+                        return string;
+                case WRDE_CMDSUB:
+                        LOG_W("Expansion of \"%s\" failed. The requested command substitution is currently not supported.", string);
+                        return string;
+                case WRDE_NOSPACE:
+                        LOG_W("Expansion of \"%s\" failed. We ran out of memory.", string);
+                        return string;
+                case WRDE_SYNTAX:
+                        LOG_W("Expansion of \"%s\" failed. It contains invalid syntax.", string);
+                        return string;
         }
+        g_free(string);
 
-        return string;
+        char *res = g_strjoinv(" ", we.we_wordv);
+        wordfree(&we);
+
+        return res;
 }
 
 /* see utils.h */
@@ -315,6 +334,23 @@ gint64 time_monotonic_now(void)
         clock_gettime(CLOCK_MONOTONIC, &tv_now);
 #endif
         return S2US(tv_now.tv_sec) + tv_now.tv_nsec / 1000;
+}
+
+gint64 time_now(void)
+{
+        struct timespec tv_now;
+
+        clock_gettime(CLOCK_REALTIME, &tv_now);
+        return S2US(tv_now.tv_sec) + tv_now.tv_nsec / 1000;
+}
+
+gint64 modification_time(const char *path)
+{
+        struct stat statbuf;
+        if (stat(path, &statbuf) != 0)
+                return -1;
+
+        return S2US(statbuf.st_mtim.tv_sec) + statbuf.st_mtim.tv_nsec / 1000;
 }
 
 /* see utils.h */
@@ -460,4 +496,19 @@ void add_paths_from_env(GPtrArray *arr, char *env_name, char *subdir, char *alte
         g_strfreev(xdg_data_dirs_arr);
 }
 
-/* vim: set ft=c tabstop=8 shiftwidth=8 expandtab textwidth=0: */
+bool string_is_int(const char *str) {
+        if (str != NULL) {
+                while (isspace(*str)) str++;
+                while (isdigit(*str)) str++;
+                while (isspace(*str)) str++;
+                return *str == '\0';
+        }
+        return true;
+}
+
+bool is_like_path(const char *string)
+{
+        return string[0] == '/' || string[0] == '~'
+                || (string[0] == '.' && string[1] == '.' && string[2] == '/')
+                || (string[0] == '.' && string[1] == '/');
+}
